@@ -11,6 +11,8 @@ Graphical editor for CardPrinter layout files:
 """
 
 import os
+import shutil
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -18,6 +20,16 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageTk
 
 from CardPrinter import CardPrinter, get_images_dict, find_image_match
+
+# OS-level drag & drop (dragging files in from Explorer) needs tkinterdnd2;
+# the app works without it, just without that feature.
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    _TK_BASE = TkinterDnD.Tk
+    HAS_DND = True
+except ImportError:
+    _TK_BASE = tk.Tk
+    HAS_DND = False
 
 # Page geometry in cm, must match CardPrinter
 PAGE_W_CM, PAGE_H_CM = 21.0, 29.7
@@ -28,6 +40,9 @@ TOP_CM = 1.05
 CUT_LINE_CM = 10 / 28.346  # the PDF cutting lines use a 10 pt stroke width
 
 SLOTS_PER_PAGE = 9
+
+# Must match the extensions CardPrinter.get_images_dict() picks up
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif'}
 
 
 def slot_origin_cm(i):
@@ -43,7 +58,7 @@ def fit_box(img_w, img_h, box_w, box_h):
     return max(1, int(img_w * scale)), max(1, int(img_h * scale))
 
 
-class CardPrinterUI(tk.Tk):
+class CardPrinterUI(_TK_BASE):
     def __init__(self):
         super().__init__()
         self.title("Card Printer")
@@ -148,7 +163,18 @@ class CardPrinterUI(tk.Tk):
         self.canvas.bind("<Next>", lambda e: self.next_page())    # PageDown
         self.bind("<Delete>", lambda e: self.remove_card())
 
-        self.status_var = tk.StringVar(value="Select an image folder to begin.")
+        if HAS_DND:
+            # Drop on the page: place cards into slots starting where they land
+            self.canvas.drop_target_register(DND_FILES)
+            self.canvas.dnd_bind("<<Drop>>", self._on_canvas_drop)
+            # Drop on the library list: just import into the image folder
+            self.listbox.drop_target_register(DND_FILES)
+            self.listbox.dnd_bind("<<Drop>>", self._on_library_drop)
+
+        start_msg = "Select an image folder to begin."
+        if not HAS_DND:
+            start_msg += "  (pip install tkinterdnd2 to enable drag & drop from Explorer)"
+        self.status_var = tk.StringVar(value=start_msg)
         ttk.Label(self, textvariable=self.status_var, padding=(8, 4),
                   relief=tk.SUNKEN).pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -193,6 +219,81 @@ class CardPrinterUI(tk.Tk):
             self.status("Select an image in the list first.")
             return None
         return self.filtered_images[selection[0]]
+
+    # ------------------------------------------------- drag & drop from OS --
+
+    def _dropped_image_files(self, event):
+        """Filter a <<Drop>> event down to existing image files"""
+        paths = [Path(p) for p in self.tk.splitlist(event.data)]
+        images = [p for p in paths
+                  if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS]
+        skipped = len(paths) - len(images)
+        if skipped:
+            self.status(f"Ignored {skipped} dropped file(s) that are not images.")
+        return images
+
+    def _import_dropped_file(self, path):
+        """Make a dropped file usable as a card: ensure it lives in the image
+        folder (copy it there if needed) and return a slot dict."""
+        if self.image_folder is None:
+            self.choose_folder(str(path.parent))
+        if path.parent.resolve() != self.image_folder.resolve():
+            dest = self.image_folder / path.name
+            if not dest.exists():
+                shutil.copy2(path, dest)
+                self.status(f"Copied {path.name} into the image folder.")
+            path = dest
+        return {"name": path.name, "path": str(path)}
+
+    def _refresh_folder(self):
+        """Re-scan the image folder after files were added to it"""
+        if self.image_folder:
+            self.images_dict, self.images_list = get_images_dict(str(self.image_folder))
+            self.folder_var.set(f"{self.image_folder}  ({len(self.images_list)} images)")
+            self.refresh_image_list()
+
+    def _on_canvas_drop(self, event):
+        images = self._dropped_image_files(event)
+        if not images:
+            return
+        try:  # slot under the drop position (event gives screen coordinates)
+            ex = int(event.x_root) - self.canvas.winfo_rootx()
+            ey = int(event.y_root) - self.canvas.winfo_rooty()
+        except (AttributeError, TypeError, ValueError):
+            ex = self.canvas.winfo_pointerx() - self.canvas.winfo_rootx()
+            ey = self.canvas.winfo_pointery() - self.canvas.winfo_rooty()
+        slot = self._slot_at(ex, ey)
+        page = self.pages[self.cur]
+        if slot is None:
+            slot = next((i for i, c in enumerate(page) if c is None), None)
+            if slot is None:
+                self.status("Page is full — drop onto a slot to replace its card.")
+                return
+
+        placed = 0
+        for img in images:
+            if slot >= SLOTS_PER_PAGE:
+                break
+            page[slot] = self._import_dropped_file(img)
+            slot += 1
+            placed += 1
+        self._refresh_folder()
+        self.sel = min(slot, SLOTS_PER_PAGE - 1)
+        self.redraw()
+        left_out = len(images) - placed
+        msg = f"Placed {placed} dropped card(s) on page {self.cur + 1}"
+        if left_out:
+            msg += f" — {left_out} did not fit on this page"
+        self.status(msg)
+
+    def _on_library_drop(self, event):
+        images = self._dropped_image_files(event)
+        if not images:
+            return
+        for img in images:
+            self._import_dropped_file(img)
+        self._refresh_folder()
+        self.status(f"Imported {len(images)} image(s) into the library.")
 
     # ---------------------------------------------------------- card editing --
 
@@ -388,15 +489,72 @@ class CardPrinterUI(tk.Tk):
                     + "\n\nExport anyway?"):
                 return
 
+        pages = [[c["path"] if c and c["path"] else None for c in page]
+                 for page in self.pages]
+        progress = {"page": 0, "done": False, "error": None, "cancel": False}
+
+        # The heavy work (image re-encoding) runs in a thread so the window
+        # stays responsive; a modal dialog shows per-page progress.
+        dlg = tk.Toplevel(self)
+        dlg.title("Exporting PDF")
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        dlg.geometry(f"+{self.winfo_rootx() + 300}+{self.winfo_rooty() + 250}")
+        label_var = tk.StringVar(value=f"Page 0 / {len(pages)}")
+        ttk.Label(dlg, textvariable=label_var).pack(padx=20, pady=(14, 4))
+        bar = ttk.Progressbar(dlg, maximum=len(pages), length=360)
+        bar.pack(padx=20, pady=4)
+
+        def cancel():
+            progress["cancel"] = True
+            label_var.set("Cancelling…")
+
+        ttk.Button(dlg, text="Cancel", command=cancel).pack(pady=(4, 12))
+        dlg.protocol("WM_DELETE_WINDOW", cancel)
         try:
-            printer = CardPrinter(str(path))
-            printer.start_pdf()
-            for page in self.pages:
-                printer.create_page_with_images(
-                    [c["path"] if c and c["path"] else None for c in page])
-            printer.finalize()
-        except Exception as e:
-            messagebox.showerror("Export PDF", f"Export failed:\n{e}")
+            dlg.grab_set()
+        except tk.TclError:
+            pass  # dialog not mapped yet; export works fine without modality
+
+        def worker():
+            try:
+                printer = CardPrinter(str(path))
+                printer.start_pdf()
+                for i, image_paths in enumerate(pages, 1):
+                    if progress["cancel"]:
+                        return  # nothing written to disk before finalize()
+                    printer.create_page_with_images(image_paths)
+                    progress["page"] = i
+                printer.finalize()
+            except Exception as e:
+                progress["error"] = e
+            finally:
+                progress["done"] = True
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll():
+            bar["value"] = progress["page"]
+            if not progress["cancel"]:
+                label_var.set(f"Page {progress['page']} / {len(pages)}")
+            if progress["done"]:
+                try:
+                    dlg.grab_release()
+                except tk.TclError:
+                    pass
+                dlg.destroy()
+            else:
+                dlg.after(100, poll)
+
+        poll()
+        self.wait_window(dlg)  # blocks here, but keeps processing UI events
+
+        if progress["error"]:
+            messagebox.showerror("Export PDF",
+                                 f"Export failed:\n{progress['error']}")
+            return
+        if progress["cancel"]:
+            self.status("Export cancelled — no PDF was written.")
             return
 
         self.status(f"Exported {len(self.pages)} pages to {path}")
@@ -518,7 +676,8 @@ class CardPrinterUI(tk.Tk):
                 master.thumbnail((800, 800), Image.LANCZOS)
                 self._pil_cache[path] = master
             w, h = fit_box(*master.size, box_w, box_h)
-            photo = ImageTk.PhotoImage(master.resize((w, h), Image.LANCZOS))
+            photo = ImageTk.PhotoImage(master.resize((w, h), Image.LANCZOS),
+                                       master=self.canvas)
         except OSError:
             return None
         self._thumb_cache[key] = photo

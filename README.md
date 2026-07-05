@@ -18,8 +18,11 @@ the matching backs.
 Python 3.10+ with:
 
 ```
-pip install reportlab pillow tqdm
+pip install reportlab pillow tqdm tkinterdnd2
 ```
+
+(`tkinterdnd2` is optional — it enables dragging image files in from
+Explorer/desktop. The UI runs without it.)
 
 ## Running the UI
 
@@ -43,6 +46,11 @@ Workflow:
    - **Fill whole page with card** — puts the selected image in all 9 slots
      (handy for back pages).
    - **Del** key or **Remove card from slot** — clears the selected slot.
+   - **Drag files in from Explorer/desktop**: drop image files onto the page
+     to place them starting at the slot they land on (or the first empty
+     slot); drop them onto the image list to just add them to the library.
+     Files from outside the image folder are copied into it automatically so
+     saved layouts keep working.
    - **+ Add Page / Duplicate Page / − Delete Page**, **◀ Prev / Next ▶**
      (or PageUp/PageDown) to manage pages.
 4. **Save Layout…** — writes the layout back in the same text format, so it
@@ -84,8 +92,11 @@ pip install pyinstaller
 Build (run inside this folder):
 
 ```
-pyinstaller --onefile --windowed --name CardPrinter CardPrinterUI.py
+pyinstaller --onefile --windowed --name CardPrinter --collect-all tkinterdnd2 CardPrinterUI.py
 ```
+
+(`--collect-all tkinterdnd2` bundles the drag & drop support library into the
+exe; leave it out if you don't have tkinterdnd2 installed.)
 
 - The finished program is **`dist\CardPrinter.exe`** — a single file you can
   copy anywhere; no Python installation needed on the target machine.
