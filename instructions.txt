@@ -1,0 +1,1 @@
+python .\CardPrinter.py -p InputList.txt
