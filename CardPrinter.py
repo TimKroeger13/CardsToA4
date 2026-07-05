@@ -112,10 +112,10 @@ class CardPrinter:
         self.c.rect(0, 0, self.page_width, self.page_height, fill=1, stroke=0)
         
     def draw_cutting_lines(self):
-        """Draw cutting lines in color #0C0C0C"""
+        """Draw white cutting lines around each card position"""
         cutting_color = HexColor('#FFFFFF')
         self.c.setStrokeColor(cutting_color)
-        self.c.setLineWidth(10)  # Thin line here
+        self.c.setLineWidth(10)
         
         # Draw rectangles at original positions (without margin offset)
         for x, y in self.cutting_positions:
@@ -135,114 +135,57 @@ class CardPrinter:
         
         return True
     
+    def _render_page(self, image_paths):
+        """Render one page: black background, cutting lines on odd (front) pages, then images"""
+        if not self.c:
+            self.start_pdf()
+
+        self.page_count += 1
+
+        # Draw black background
+        self.draw_background()
+
+        # Draw cutting lines only on odd pages (front pages)
+        if self.page_count % 2 == 1:
+            self.draw_cutting_lines()
+
+        for i, img_path in enumerate(image_paths):
+            if img_path and i < len(self.positions):
+                x, y = self.positions[i]
+                try:
+                    if self.optimize:
+                        img_reader = self.optimize_image(img_path)
+                        if img_reader:
+                            self.c.drawImage(img_reader, x, y,
+                                           width=self.img_width,
+                                           height=self.img_height,
+                                           preserveAspectRatio=True)
+                    else:
+                        self.c.drawImage(img_path, x, y,
+                                       width=self.img_width,
+                                       height=self.img_height,
+                                       preserveAspectRatio=True)
+                except Exception as e:
+                    print(f"Error adding image {img_path}: {e}")
+
+        self.c.showPage()
+
     def create_page_with_images(self, image_paths):
         """Create a complete page with exactly the provided images"""
-        if not self.c:
-            self.start_pdf()
-        
-        self.page_count += 1
-        
-        # Draw black background
-        self.draw_background()
-        
-        # Draw cutting lines only on odd pages (front pages)
-        if self.page_count % 2 == 1:
-            self.draw_cutting_lines()
-        
-        # Draw images
-        for i, img_path in enumerate(image_paths):
-            if i < 9 and img_path and i < len(self.positions):
-                x, y = self.positions[i]
-                try:
-                    if self.optimize:
-                        img_reader = self.optimize_image(img_path)
-                        if img_reader:
-                            self.c.drawImage(img_reader, x, y, 
-                                           width=self.img_width, 
-                                           height=self.img_height,
-                                           preserveAspectRatio=True)
-                    else:
-                        self.c.drawImage(img_path, x, y, 
-                                       width=self.img_width, 
-                                       height=self.img_height,
-                                       preserveAspectRatio=True)
-                except Exception as e:
-                    print(f"Error adding image {img_path}: {e}")
-        
-        self.c.showPage()
-        
+        self._render_page(image_paths)
+
     def _create_page(self):
         """Create a page with the current images"""
-        if not self.c:
-            self.start_pdf()
-        
-        self.page_count += 1
-        
-        # Draw black background
-        self.draw_background()
-        
-        # Draw cutting lines only on odd pages (front pages)
-        if self.page_count % 2 == 1:
-            self.draw_cutting_lines()
-            
-        for i, img_path in enumerate(self.current_page_images):
-            if i < len(self.positions):
-                x, y = self.positions[i]
-                try:
-                    if self.optimize:
-                        img_reader = self.optimize_image(img_path)
-                        if img_reader:
-                            self.c.drawImage(img_reader, x, y, 
-                                           width=self.img_width, 
-                                           height=self.img_height,
-                                           preserveAspectRatio=True)
-                    else:
-                        self.c.drawImage(img_path, x, y, 
-                                       width=self.img_width, 
-                                       height=self.img_height,
-                                       preserveAspectRatio=True)
-                except Exception as e:
-                    print(f"Error adding image {img_path}: {e}")
-        
-        self.c.showPage()
-        
+        self._render_page(self.current_page_images)
+
     def finalize(self):
         """Finalize the PDF, handling any remaining images"""
-        if self.current_page_images:
+        if self.current_page_images and self.c:
             while len(self.current_page_images) < 9:
                 self.current_page_images.append(None)
-            
-            if self.c:
-                self.page_count += 1
-                
-                # Draw black background
-                self.draw_background()
-                
-                # Draw cutting lines only on odd pages
-                if self.page_count % 2 == 1:
-                    self.draw_cutting_lines()
-                
-                for i, img_path in enumerate(self.current_page_images):
-                    if img_path and i < len(self.positions):
-                        x, y = self.positions[i]
-                        try:
-                            if self.optimize:
-                                img_reader = self.optimize_image(img_path)
-                                if img_reader:
-                                    self.c.drawImage(img_reader, x, y,
-                                                   width=self.img_width,
-                                                   height=self.img_height,
-                                                   preserveAspectRatio=True)
-                            else:
-                                self.c.drawImage(img_path, x, y,
-                                               width=self.img_width,
-                                               height=self.img_height,
-                                               preserveAspectRatio=True)
-                        except Exception as e:
-                            print(f"Error adding image {img_path}: {e}")
-                
-                self.c.showPage()
-        
+            self._render_page(self.current_page_images)
+            self.current_page_images = []
+
         if self.c:
             self.c.save()
             print(f"\n✓ PDF created successfully: {self.output_filename}")
@@ -538,8 +481,8 @@ Examples:
 Features:
   - 3mm safety margins between cards
   - Black background for forgiving cuts
-  - Cutting lines (#0C0C0C) on odd pages only
-  
+  - White cutting lines on odd pages only
+
 Batch file with \\newpage format:
     #1
     1_F,2_F,3_F,4_F,6_F,7_F,9_F,10_F,12_F
@@ -577,7 +520,7 @@ Batch file with \\newpage format:
     print("Features enabled:")
     print("  ✓ 3mm safety margins between cards")
     print("  ✓ Black background")
-    print("  ✓ Cutting lines (#0C0C0C) on odd pages only\n")
+    print("  ✓ White cutting lines on odd pages only\n")
     
     os.chdir(args.folder)
     
